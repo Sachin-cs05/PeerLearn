@@ -1,7 +1,6 @@
 import React from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { Header } from './Header.js';
-import { Footer } from './Footer.js';
 import { IncomingCallDialog } from '../components/calls/IncomingCallDialog.js';
 import { CallModal } from '../components/calls/CallModal.js';
 
@@ -15,7 +14,6 @@ export const RootLayout: React.FC = () => {
       <main className="flex-1 flex flex-col">
         <Outlet />
       </main>
-      {!isLandingPage && <Footer />}
       {/* Real-time Call Signaling & Calling UI */}
       <IncomingCallDialog />
       <CallModal />
