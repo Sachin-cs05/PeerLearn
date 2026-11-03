@@ -1,3 +1,4 @@
+
 import dotenv from 'dotenv';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,23 +7,29 @@ import { z } from 'zod';
 // Load .env from root or current directory
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
 dotenv.config({ path: path.resolve(__dirname, '../../../../.env') });
 dotenv.config(); // fallback to local cwd .env
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+
   PORT: z
     .string()
     .default('5000')
     .transform((val) => {
       const parsed = Number.parseInt(val, 10);
+
       if (Number.isNaN(parsed) || parsed <= 0 || parsed > 65535) {
         throw new Error(`Invalid PORT value: ${val}`);
       }
+
       return parsed;
     }),
+
   WEB_ORIGIN: z.string().default('http://localhost:5173'),
   APP_BASE_URL: z.string().default('http://localhost:5173'),
+
   DATABASE_URL: z.string().min(1, 'DATABASE_URL environment variable is required'),
 
   // Authentication Secrets
@@ -30,31 +37,45 @@ const envSchema = z.object({
     .string()
     .min(16, 'JWT_ACCESS_SECRET must be at least 16 characters')
     .default('peerlume_dev_jwt_access_secret_super_secure_32chars!'),
+
   JWT_REFRESH_SECRET: z
     .string()
     .min(16, 'JWT_REFRESH_SECRET must be at least 16 characters')
     .default('peerlume_dev_jwt_refresh_secret_super_secure_32chars!'),
+
   COOKIE_SECRET: z
     .string()
     .min(16, 'COOKIE_SECRET must be at least 16 characters')
     .default('peerlume_dev_cookie_signing_secret_super_secure!'),
 
-  // Optional Email Configuration
-  EMAIL_PROVIDER: z.enum(['development', 'smtp']).default('development'),
+  // Email Configuration
+  EMAIL_PROVIDER: z
+    .enum(['development', 'smtp', 'resend'])
+    .default('development'),
+
+  RESEND_API_KEY: z.string().optional(),
+
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.string().optional(),
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
-  EMAIL_FROM: z.string().default('PeerLearn <noreply@peerlearn.local>'),
+
+  EMAIL_FROM: z
+    .string()
+    .default('PeerLearn <noreply@peerlearn.local>'),
 
   // WebRTC STUN/TURN Configuration
   STUN_SERVERS: z
     .string()
     .default('stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302'),
+
   TURN_SERVER: z.string().optional(),
   TURN_USERNAME: z.string().optional(),
   TURN_CREDENTIAL: z.string().optional(),
+
 }).superRefine((data, ctx) => {
+
+  // Production Secret Validation
   if (data.NODE_ENV === 'production') {
     const secrets = [
       { name: 'JWT_ACCESS_SECRET', value: data.JWT_ACCESS_SECRET },
@@ -72,16 +93,39 @@ const envSchema = z.object({
       }
     }
   }
-});
 
+  // Resend API Key Validation
+  if (data.EMAIL_PROVIDER === 'resend' && !data.RESEND_API_KEY?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'RESEND_API_KEY is required when EMAIL_PROVIDER is resend',
+      path: ['RESEND_API_KEY'],
+    });
+  }
+
+  // SMTP Configuration Validation
+  if (
+    data.EMAIL_PROVIDER === 'smtp' &&
+    (!data.SMTP_USER || !data.SMTP_PASS)
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'SMTP_USER and SMTP_PASS are required when EMAIL_PROVIDER is smtp',
+      path: ['SMTP_USER'],
+    });
+  }
+
+});
 
 const parsedEnv = envSchema.safeParse(process.env);
 
 if (!parsedEnv.success) {
   console.error('❌ Invalid environment variables configuration:');
+
   for (const issue of parsedEnv.error.issues) {
     console.error(`   - ${issue.path.join('.')}: ${issue.message}`);
   }
+
   process.exit(1);
 }
 
