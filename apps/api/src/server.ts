@@ -18,7 +18,7 @@ async function startServer(): Promise<void> {
   // Initialize background session reminder scheduler
   startReminderScheduler();
 
-  server.listen(env.PORT, async () => {
+  server.listen(env.PORT,'0.0.0.0', async () => {
     logger.info(`✨ ${APP_NAME} API Server started successfully!`);
     logger.info(`🎯 Tagline: "${APP_TAGLINE}"`);
     logger.info(`🚀 Listening on http://localhost:${env.PORT}`);
