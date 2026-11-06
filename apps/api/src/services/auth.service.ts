@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type {
   RegisterInput,
   LoginInput,
@@ -6,6 +7,7 @@ import type {
 import { HTTP_STATUS } from '@peerlume/shared';
 import { prisma } from '../config/prisma.js';
 import { AppError } from '../middleware/errorHandler.js';
+import { logger } from '../utils/logger.js';
 import {
   hashPassword,
   verifyPassword,
@@ -96,12 +98,17 @@ export async function registerStudent(
     });
 
     // 5. Create Refresh Session (valid for 7 days)
-    const rawRefreshToken = generateRandomToken();
-    const sessionHashedToken = hashToken(rawRefreshToken);
+    const sessionId = randomUUID();
     const sessionExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const refreshToken = generateRefreshToken({
+      userId: user.id,
+      sessionId,
+    });
+    const sessionHashedToken = hashToken(refreshToken);
 
     const session = await tx.refreshSession.create({
       data: {
+        id: sessionId,
         userId: user.id,
         hashedToken: sessionHashedToken,
         userAgent: meta?.userAgent,
@@ -110,7 +117,7 @@ export async function registerStudent(
       },
     });
 
-    return { user, rawVerifyToken, rawRefreshToken, sessionId: session.id };
+    return { user, rawVerifyToken, refreshToken };
   });
 
   // 6. Send verification email
@@ -120,21 +127,16 @@ export async function registerStudent(
     result.user.fullName
   );
 
-  // 7. Generate JWT access and refresh tokens
+  // 7. Generate JWT access token
   const accessToken = generateAccessToken({
     userId: result.user.id,
     email: result.user.email,
   });
 
-  const refreshToken = generateRefreshToken({
-    userId: result.user.id,
-    sessionId: result.sessionId,
-  });
-
   return {
     user: formatAuthUser(result.user),
     accessToken,
-    refreshToken,
+    refreshToken: result.refreshToken,
   };
 }
 
@@ -167,13 +169,18 @@ export async function loginStudent(
     );
   }
 
-  // Create Refresh Session
-  const rawRefreshToken = generateRandomToken();
-  const sessionHashedToken = hashToken(rawRefreshToken);
+  // Create Refresh Session with cryptographic token binding
+  const sessionId = randomUUID();
   const sessionExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const refreshToken = generateRefreshToken({
+    userId: user.id,
+    sessionId,
+  });
+  const sessionHashedToken = hashToken(refreshToken);
 
   const session = await prisma.refreshSession.create({
     data: {
+      id: sessionId,
       userId: user.id,
       hashedToken: sessionHashedToken,
       userAgent: meta?.userAgent,
@@ -185,11 +192,6 @@ export async function loginStudent(
   const accessToken = generateAccessToken({
     userId: user.id,
     email: user.email,
-  });
-
-  const refreshToken = generateRefreshToken({
-    userId: user.id,
-    sessionId: session.id,
   });
 
   return {
@@ -237,7 +239,7 @@ export async function refreshAuthSession(
   meta?: { userAgent?: string; ipAddress?: string }
 ): Promise<{ user: AuthUser; accessToken: string; refreshToken: string }> {
   const payload = verifyRefreshToken(refreshTokenString);
-  if (!payload) {
+  if (!payload?.sessionId) {
     throw new AppError(
       'Session expired or invalid. Please log in again.',
       HTTP_STATUS.UNAUTHORIZED,
@@ -254,24 +256,70 @@ export async function refreshAuthSession(
     },
   });
 
-  if (!session || session.isRevoked || session.expiresAt < new Date()) {
+  if (!session) {
     throw new AppError(
-      'Session expired or revoked. Please log in again.',
+      'Session expired or invalid. Please log in again.',
+      HTTP_STATUS.UNAUTHORIZED,
+      'INVALID_SESSION'
+    );
+  }
+
+  // Refresh Token Reuse Detection:
+  // If a revoked session is presented for refresh, a previously rotated or compromised token is being reused.
+  // Invalidate all active sessions for this user to contain the breach.
+  if (session.isRevoked) {
+    logger.warn(
+      `[SECURITY] Revoked refresh token reuse detected for user ${session.userId}. Invalidating all active sessions.`
+    );
+    await prisma.refreshSession.updateMany({
+      where: { userId: session.userId, isRevoked: false },
+      data: { isRevoked: true },
+    });
+
+    throw new AppError(
+      'Session revoked. Please log in again.',
+      HTTP_STATUS.UNAUTHORIZED,
+      'REVOKED_SESSION'
+    );
+  }
+
+  if (session.expiresAt < new Date()) {
+    throw new AppError(
+      'Session expired. Please log in again.',
+      HTTP_STATUS.UNAUTHORIZED,
+      'INVALID_SESSION'
+    );
+  }
+
+  // Cryptographic token verification:
+  // Verify that the presented token matches the hashedToken stored in the session
+  const presentedHash = hashToken(refreshTokenString);
+  if (session.hashedToken && session.hashedToken !== presentedHash) {
+    logger.warn(
+      `[SECURITY] Refresh token hash mismatch for session ${session.id}. Token has been tampered with.`
+    );
+    throw new AppError(
+      'Session invalid. Please log in again.',
       HTTP_STATUS.UNAUTHORIZED,
       'INVALID_SESSION'
     );
   }
 
   // Session rotation: Revoke old session and issue new one
-  const rawRefreshToken = generateRandomToken();
-  const sessionHashedToken = hashToken(rawRefreshToken);
+  const newSessionId = randomUUID();
+  const newRefreshToken = generateRefreshToken({
+    userId: session.user.id,
+    sessionId: newSessionId,
+  });
+  const newSessionHashedToken = hashToken(newRefreshToken);
   const sessionExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
   const [newSession] = await prisma.$transaction([
     prisma.refreshSession.create({
       data: {
+        id: newSessionId,
         userId: session.user.id,
-        hashedToken: sessionHashedToken,
+        hashedToken: newSessionHashedToken,
         userAgent: meta?.userAgent || session.userAgent,
         ipAddress: meta?.ipAddress || session.ipAddress,
         expiresAt: sessionExpiresAt,
@@ -286,11 +334,6 @@ export async function refreshAuthSession(
   const accessToken = generateAccessToken({
     userId: session.user.id,
     email: session.user.email,
-  });
-
-  const newRefreshToken = generateRefreshToken({
-    userId: session.user.id,
-    sessionId: newSession.id,
   });
 
   return {

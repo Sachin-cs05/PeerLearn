@@ -7,6 +7,7 @@ import { requestLogger } from './middleware/requestLogger.js';
 import { notFoundHandler } from './middleware/notFoundHandler.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { globalApiLimiter } from './middleware/rateLimiter.js';
+import { csrfProtection } from './middleware/csrf.js';
 import { apiRoutes } from './routes/index.js';
 
 export function createApp(): Express {
@@ -30,7 +31,7 @@ export function createApp(): Express {
         ) {
           callback(null, true);
         } else {
-          callback(new Error(`Origin ${origin} not allowed by CORS`));
+          callback(null, false);
         }
       },
       credentials: true,
@@ -49,6 +50,9 @@ export function createApp(): Express {
 
   // Global Rate Limiting for DoS prevention
   app.use('/api', globalApiLimiter);
+
+  // Cross-Site Request Forgery Protection for cookie-authenticated mutating requests
+  app.use('/api', csrfProtection);
 
   // Base API routes
   app.use('/api', apiRoutes);

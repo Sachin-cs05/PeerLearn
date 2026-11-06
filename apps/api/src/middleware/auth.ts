@@ -51,12 +51,22 @@ export async function requireAuth(
       const refreshPayload = verifyRefreshToken(refreshToken);
       if (refreshPayload) {
         const hashed = hashToken(refreshToken);
-        const session = await prisma.refreshSession.findUnique({
-          where: { hashedToken: hashed },
-          include: { user: true },
-        });
+        const session = refreshPayload.sessionId
+          ? await prisma.refreshSession.findUnique({
+              where: { id: refreshPayload.sessionId },
+              include: { user: true },
+            })
+          : await prisma.refreshSession.findUnique({
+              where: { hashedToken: hashed },
+              include: { user: true },
+            });
 
-        if (session && !session.isRevoked && session.expiresAt > new Date()) {
+        if (
+          session &&
+          !session.isRevoked &&
+          session.expiresAt > new Date() &&
+          (!session.hashedToken || session.hashedToken === hashed)
+        ) {
           // Refresh session is valid! Issue new access token
           const newAccessToken = generateAccessToken({
             userId: session.user.id,
