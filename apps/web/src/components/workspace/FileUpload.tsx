@@ -25,6 +25,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
   const [isDragging, setIsDragging] = useState(false);
 
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -68,8 +69,11 @@ export const FileUpload: React.FC<FileUploadProps> = ({
     };
 
     setUploading(true);
+    setUploadProgress(0);
     try {
-      const res = await apiService.resources.create(input, file);
+      const res = await apiService.resources.create(input, file, (pct) => {
+        setUploadProgress(pct);
+      });
       if (res.error) {
         setError(res.error);
         return;
@@ -81,6 +85,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
       setError(err.message || 'Failed to upload document');
     } finally {
       setUploading(false);
+      setUploadProgress(null);
     }
   };
 
@@ -218,13 +223,29 @@ export const FileUpload: React.FC<FileUploadProps> = ({
         </button>
       </div>
 
+      {/* Upload Progress Bar */}
+      {uploading && uploadProgress !== null && (
+        <div className="space-y-1.5 bg-surface border border-border rounded-xl p-3">
+          <div className="flex items-center justify-between text-xs font-medium text-foreground">
+            <span>Uploading document...</span>
+            <span className="font-mono">{uploadProgress}%</span>
+          </div>
+          <div className="w-full bg-surface-elevated rounded-full h-1.5 overflow-hidden border border-border">
+            <div
+              className="bg-foreground h-full transition-all duration-150 ease-out rounded-full"
+              style={{ width: `${uploadProgress}%` }}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Footer Actions */}
       <div className="flex items-center justify-end gap-3 pt-3 border-t border-border">
         <Button variant="ghost" type="button" onClick={onCancel} disabled={uploading}>
           Cancel
         </Button>
         <Button variant="primary" type="submit" isLoading={uploading} leftIcon={<Upload className="w-4 h-4" />}>
-          Upload & Share
+          {uploading ? (uploadProgress !== null ? `Uploading (${uploadProgress}%)...` : 'Uploading...') : 'Upload & Share'}
         </Button>
       </div>
     </form>

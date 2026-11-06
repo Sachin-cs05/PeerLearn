@@ -17,6 +17,7 @@ import {
 } from './storage/storage.types.js';
 import { LocalStorageProvider } from './storage/local.provider.js';
 import { R2StorageProvider } from './storage/r2.provider.js';
+import { validateFileSignature } from './storage/validator.js';
 
 export {
   StorageProvider,
@@ -140,6 +141,9 @@ export const storageService = {
       );
     }
 
+    // Inspect file signature (magic bytes) to defend against spoofed extensions/MIME
+    validateFileSignature(buffer, normalizedMime);
+
     // Sanitize display name (strip path navigation chars and keep only safe characters)
     const sanitizedOriginalName = path
       .basename(originalName)
@@ -204,7 +208,8 @@ export const storageService = {
       throw new AppError('Invalid storage key format', HTTP_STATUS.BAD_REQUEST);
     }
 
-    return await activeProvider.getDownloadUrl(fileKey, expiresInSeconds);
+    const clampedExpiry = Math.min(Math.max(1, Number(expiresInSeconds) || 300), 300);
+    return await activeProvider.getDownloadUrl(fileKey, clampedExpiry);
   },
 
   /**
@@ -221,11 +226,13 @@ export const storageService = {
         provider: activeProvider.name,
       });
     } catch (err: any) {
-      logger.warn('[STORAGE] File deletion warning (best-effort cleanup)', {
+      logger.error('[STORAGE] File deletion failed', {
         fileKey,
         error: err.message,
         provider: activeProvider.name,
       });
+      if (err instanceof AppError) throw err;
+      throw new AppError(`Storage deletion error: ${err.message}`, HTTP_STATUS.INTERNAL_SERVER_ERROR);
     }
   },
 

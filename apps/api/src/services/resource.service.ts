@@ -8,6 +8,8 @@ import type {
   ResourceType,
 } from '@peerlume/shared';
 import { storageService } from './storage.service.js';
+import { storageReconciliation } from './storage/reconciliation.service.js';
+import { logger } from '../utils/logger.js';
 import { checkBlockBetween } from './chat.service.js';
 
 export function formatLearningResourceDto(r: any): LearningResourceDto {
@@ -101,30 +103,69 @@ export async function createResource(
     fileMeta = await storageService.saveFile(file.buffer, file.originalname, file.mimetype);
   }
 
-  const resource = await prisma.learningResource.create({
-    data: {
-      creatorId,
-      sessionId: sessionId || null,
-      targetUserId: targetUserId || null,
-      type: rawType,
-      title: title.trim(),
-      description: description?.trim() || null,
-      content: rawType === 'CODE' ? (content ?? null) : (content ? content.trim() : null),
-      url: sanitizedUrl,
-      language: rawType === 'CODE' ? effectiveLang : null,
-      fileKey: fileMeta?.fileKey || null,
-      fileName: fileMeta?.originalName || null,
-      fileSize: fileMeta?.sizeBytes || null,
-      mimeType: fileMeta?.mimeType || null,
-      isPrivate: Boolean(isPrivate),
-    },
-    include: {
-      creator: { select: { id: true, fullName: true, avatarUrl: true } },
-      session: { select: { id: true, title: true } },
-    },
-  });
+  try {
+    const effectiveIsPrivate =
+      isPrivate !== undefined && isPrivate !== null
+        ? Boolean(isPrivate)
+        : !sessionId && !targetUserId
+          ? true
+          : false;
 
-  return formatLearningResourceDto(resource);
+    const resource = await prisma.learningResource.create({
+      data: {
+        creatorId,
+        sessionId: sessionId || null,
+        targetUserId: targetUserId || null,
+        type: rawType,
+        title: title.trim(),
+        description: description?.trim() || null,
+        content: rawType === 'CODE' ? (content ?? null) : (content ? content.trim() : null),
+        url: sanitizedUrl,
+        language: rawType === 'CODE' ? effectiveLang : null,
+        fileKey: fileMeta?.fileKey || null,
+        fileName: fileMeta?.originalName || null,
+        fileSize: fileMeta?.sizeBytes || null,
+        mimeType: fileMeta?.mimeType || null,
+        isPrivate: effectiveIsPrivate,
+      },
+      include: {
+        creator: { select: { id: true, fullName: true, avatarUrl: true } },
+        session: { select: { id: true, title: true } },
+      },
+    });
+
+    return formatLearningResourceDto(resource);
+  } catch (dbError: any) {
+    // Compensating Transaction: Cleanup orphaned storage object if database persistence fails
+    if (fileMeta?.fileKey) {
+      try {
+        await storageService.deleteFile(fileMeta.fileKey);
+        logger.info('[STORAGE_COMPENSATION] Successfully rolled back storage object after DB error', {
+          fileKey: fileMeta.fileKey,
+        });
+      } catch (compensatingError: any) {
+        // Compensating deletion failed! Register the orphaned key
+        try {
+          await storageReconciliation.recordOrphanStorageKey(
+            fileMeta.fileKey,
+            'COMPENSATING_CLEANUP_FAILED',
+            compensatingError?.message
+          );
+        } catch (reconcileErr: any) {
+          logger.error('[STORAGE_RECONCILIATION_CRITICAL] Failed to record orphan task during compensating failure', {
+            fileKey: fileMeta.fileKey,
+            error: reconcileErr?.message,
+          });
+        }
+        logger.error('[STORAGE_RECONCILIATION] Failed compensating cleanup of storage object after DB failure', {
+          fileKey: fileMeta.fileKey,
+          dbError: dbError?.message,
+          compensatingError: compensatingError?.message,
+        });
+      }
+    }
+    throw dbError;
+  }
 }
 
 export async function listResources(
@@ -280,12 +321,53 @@ export async function deleteResource(userId: string, resourceId: string): Promis
     throw new AppError('Unauthorized: Only the creator can delete this resource', HTTP_STATUS.FORBIDDEN);
   }
 
+  const fileKey = resource.fileKey;
+
   // Delete associated file if document
-  if (resource.fileKey) {
-    await storageService.deleteFile(resource.fileKey);
+  if (fileKey) {
+    await storageService.deleteFile(fileKey);
   }
 
-  await prisma.learningResource.delete({
-    where: { id: resourceId },
-  });
+  try {
+    await prisma.learningResource.delete({
+      where: { id: resourceId },
+    });
+  } catch (dbError: any) {
+    // R2 object was deleted, but DB record deletion failed!
+    // Best-effort clear fileKey so the record no longer points to a deleted storage object
+    try {
+      await prisma.learningResource.update({
+        where: { id: resourceId },
+        data: { fileKey: null },
+      });
+    } catch {
+      // Best-effort; if DB connection is completely down, reconciliation task handles it
+    }
+
+    try {
+      await storageReconciliation.recordDanglingDbResource(
+        resourceId,
+        fileKey,
+        'DB_DELETE_FAILED',
+        dbError?.message
+      );
+    } catch (reconcileErr: any) {
+      logger.error('[STORAGE_RECONCILIATION_CRITICAL] Failed to record dangling task during delete failure', {
+        resourceId,
+        fileKey,
+        error: reconcileErr?.message,
+      });
+    }
+
+    logger.error('[STORAGE_RECONCILIATION] DB record deletion failed after storage deletion', {
+      resourceId,
+      fileKey,
+      error: dbError?.message,
+    });
+
+    throw new AppError(
+      'Failed to finalize resource record deletion. Task registered for durable reconciliation.',
+      HTTP_STATUS.INTERNAL_SERVER_ERROR
+    );
+  }
 }

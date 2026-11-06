@@ -1,0 +1,19 @@
+[
+  {
+    "id": "orphan-fe7f8d94-1a54-4f41-99d9-44d4c3459b0c",
+    "taskType": "ORPHAN_STORAGE_KEY",
+    "type": "ORPHAN_STORAGE_KEY",
+    "fileKey": "crashed-worker-key-9999.pdf",
+    "resourceId": null,
+    "status": "PROCESSING",
+    "retryCount": 1,
+    "maxRetries": 5,
+    "lastError": "CRASH_TEST: ",
+    "lockedAt": "2026-11-06T17:51:08.318Z",
+    "lockedBy": "recovery-worker-alive",
+    "createdAt": "2026-11-06T17:51:07.167Z",
+    "updatedAt": "2026-11-06T17:51:08.318Z",
+    "persisted": true,
+    "storageTier": "ephemeral_fallback"
+  }
+]

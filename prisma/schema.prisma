@@ -746,5 +746,41 @@ model UserPreference {
   @@map("user_preferences")
 }
 
+// -----------------------------------------------------------------------------
+// Phase 2.2: Cloudflare R2 Persistent Storage Reconciliation
+// -----------------------------------------------------------------------------
+
+enum ReconciliationTaskType {
+  ORPHAN_STORAGE_KEY
+  DANGLING_DB_RESOURCE
+}
+
+enum ReconciliationStatus {
+  PENDING
+  PROCESSING
+  RESOLVED
+  FAILED
+}
+
+model StorageReconciliation {
+  id           String                 @id @default(uuid())
+  taskType     ReconciliationTaskType @map("task_type")
+  fileKey      String?                @map("file_key")
+  resourceId   String?                @map("resource_id")
+  status       ReconciliationStatus   @default(PENDING)
+  retryCount   Int                    @default(0) @map("retry_count")
+  maxRetries   Int                    @default(5) @map("max_retries")
+  lastError    String?                @db.Text @map("last_error")
+  lockedAt     DateTime?              @map("locked_at")
+  lockedBy     String?                @map("locked_by")
+  createdAt    DateTime               @default(now()) @map("created_at")
+  updatedAt    DateTime               @updatedAt @map("updated_at")
+
+  @@index([status, retryCount])
+  @@index([fileKey])
+  @@index([resourceId])
+  @@map("storage_reconciliations")
+}
+
 
 

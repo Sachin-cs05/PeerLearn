@@ -97,13 +97,14 @@ export class R2StorageProvider implements StorageProvider {
   }
 
   async getDownloadUrl(fileKey: string, expiresInSeconds: number = 300): Promise<string> {
+    const clampedExpiry = Math.min(Math.max(1, Number(expiresInSeconds) || 300), 300);
     try {
       const command = new GetObjectCommand({
         Bucket: this.bucketName,
         Key: fileKey,
       });
 
-      return await getSignedUrl(this.client, command, { expiresIn: expiresInSeconds });
+      return await getSignedUrl(this.client, command, { expiresIn: clampedExpiry });
     } catch (err: any) {
       logger.error('[R2_STORAGE] Failed to generate presigned download URL', {
         fileKey,
@@ -122,10 +123,15 @@ export class R2StorageProvider implements StorageProvider {
 
       await this.client.send(command);
     } catch (err: any) {
-      logger.warn('[R2_STORAGE] Delete object warning (best-effort cleanup)', {
+      if (err.name === 'NoSuchKey' || err.name === 'NotFound' || err.$metadata?.httpStatusCode === 404) {
+        // Missing object in storage is safe to ignore (idempotent deletion)
+        return;
+      }
+      logger.error('[R2_STORAGE] Failed to delete object from R2', {
         fileKey,
         error: err.message,
       });
+      throw new AppError(`Storage deletion error: ${err.message}`, HTTP_STATUS.INTERNAL_SERVER_ERROR);
     }
   }
 

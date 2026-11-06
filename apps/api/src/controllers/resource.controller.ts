@@ -91,6 +91,13 @@ export async function handleDownloadFile(
       return;
     }
 
+    // If client requested JSON presigned URL and cloud storage is active
+    if ((req.query.format === 'json' || req.query.presigned === 'true') && storageService.isCloudStorage()) {
+      const presignedUrl = await storageService.getDownloadUrl(resource.fileKey, 300);
+      sendSuccess(res, { downloadUrl: presignedUrl, expiresInSeconds: 300 }, HTTP_STATUS.OK);
+      return;
+    }
+
     // If client requested presigned redirect and cloud storage is active, generate short-lived signed URL
     if (req.query.redirect === 'true' && storageService.isCloudStorage()) {
       const presignedUrl = await storageService.getDownloadUrl(resource.fileKey, 300);

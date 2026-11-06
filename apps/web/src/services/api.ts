@@ -568,7 +568,11 @@ export const apiService = {
 
   // Knowledge-Sharing Workspace & Files
   resources: {
-    async create(input: CreateResourceInput, file?: File): Promise<ApiResult<LearningResourceDto>> {
+    async create(
+      input: CreateResourceInput,
+      file?: File,
+      onProgress?: (percent: number) => void
+    ): Promise<ApiResult<LearningResourceDto>> {
       if (file) {
         const formData = new FormData();
         formData.append('file', file);
@@ -581,6 +585,40 @@ export const apiService = {
         if (input.sessionId) formData.append('sessionId', input.sessionId);
         if (input.targetUserId) formData.append('targetUserId', input.targetUserId);
         if (input.isPrivate !== undefined) formData.append('isPrivate', String(input.isPrivate));
+
+        if (onProgress && typeof XMLHttpRequest !== 'undefined') {
+          return new Promise<ApiResult<LearningResourceDto>>((resolve) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', `${API_BASE_URL}/resources`);
+            xhr.withCredentials = true;
+
+            xhr.upload.onprogress = (event) => {
+              if (event.lengthComputable) {
+                const percent = Math.round((event.loaded / event.total) * 100);
+                onProgress(percent);
+              }
+            };
+
+            xhr.onload = () => {
+              try {
+                const json = JSON.parse(xhr.responseText);
+                if (xhr.status >= 200 && xhr.status < 300) {
+                  resolve({ data: json.data, error: null, status: xhr.status });
+                } else {
+                  resolve({ data: null, error: json.error?.message || 'Upload failed', status: xhr.status });
+                }
+              } catch {
+                resolve({ data: null, error: 'Failed to process server response', status: xhr.status || 500 });
+              }
+            };
+
+            xhr.onerror = () => {
+              resolve({ data: null, error: 'Network error during upload', status: 0 });
+            };
+
+            xhr.send(formData);
+          });
+        }
 
         return apiRequest<LearningResourceDto>('/resources', {
           method: 'POST',
@@ -626,6 +664,62 @@ export const apiService = {
 
     getDownloadUrl(resourceId: string): string {
       return `${API_BASE_URL}/resources/${resourceId}/download`;
+    },
+
+    async downloadResource(
+      resourceId: string,
+      fileName?: string
+    ): Promise<{ success: boolean; error?: string }> {
+      const triggerDownload = (blob: Blob, name: string) => {
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+      };
+
+      try {
+        // Step 1: Request presigned download URL
+        const presignedResult = await apiRequest<{ downloadUrl: string; expiresInSeconds: number }>(
+          `/resources/${resourceId}/download?format=json`
+        );
+
+        if (presignedResult.data?.downloadUrl) {
+          // Attempt download from the presigned URL
+          const downloadRes = await fetch(presignedResult.data.downloadUrl);
+
+          // If the presigned URL expired or failed (e.g. 403 from S3/R2), request ONE fresh URL
+          if (!downloadRes.ok) {
+            // Strictly 1 retry to prevent infinite loops; no logout triggered
+            const freshResult = await apiRequest<{ downloadUrl: string; expiresInSeconds: number }>(
+              `/resources/${resourceId}/download?format=json`
+            );
+
+            if (freshResult.data?.downloadUrl) {
+              const retryRes = await fetch(freshResult.data.downloadUrl);
+              if (retryRes.ok) {
+                const blob = await retryRes.blob();
+                triggerDownload(blob, fileName || 'download');
+                return { success: true };
+              }
+            }
+            return { success: false, error: 'Download link expired. Please retry.' };
+          }
+
+          const blob = await downloadRes.blob();
+          triggerDownload(blob, fileName || 'download');
+          return { success: true };
+        }
+
+        // Fallback: direct streaming endpoint via browser navigation
+        window.open(`${API_BASE_URL}/resources/${resourceId}/download`, '_blank');
+        return { success: true };
+      } catch (err: any) {
+        return { success: false, error: err?.message || 'Download failed' };
+      }
     },
   },
 

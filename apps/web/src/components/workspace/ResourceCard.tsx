@@ -31,6 +31,18 @@ export const ResourceCard: React.FC<ResourceCardProps> = ({
   const { user } = useAuth();
   const isOwner = user?.id === resource.creatorId;
   const [copied, setCopied] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+
+  const handleDownload = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (downloading) return;
+    setDownloading(true);
+    try {
+      await apiService.resources.downloadResource(resource.id, resource.fileName || 'document');
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   const handleCopyCode = async () => {
     if (!resource.content) return;
@@ -219,11 +231,12 @@ export const ResourceCard: React.FC<ResourceCardProps> = ({
 
             <a
               href={apiService.resources.getDownloadUrl(resource.id)}
+              onClick={handleDownload}
               download={resource.fileName || 'document'}
-              className="inline-flex items-center gap-1 text-xs text-foreground bg-surface-elevated hover:bg-surface-hover px-3 py-1.5 rounded-lg border border-border shrink-0 transition-colors font-medium"
+              className="inline-flex items-center gap-1 text-xs text-foreground bg-surface-elevated hover:bg-surface-hover px-3 py-1.5 rounded-lg border border-border shrink-0 transition-colors font-medium cursor-pointer"
             >
-              <Download className="w-3.5 h-3.5 text-foreground-muted" />
-              <span>Download</span>
+              <Download className={`w-3.5 h-3.5 text-foreground-muted ${downloading ? 'animate-bounce' : ''}`} />
+              <span>{downloading ? 'Downloading...' : 'Download'}</span>
             </a>
           </div>
         )}
