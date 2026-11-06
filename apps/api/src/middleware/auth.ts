@@ -2,7 +2,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { HTTP_STATUS } from '@peerlume/shared';
 import { sendError } from '../utils/apiResponse.js';
 import { verifyAccessToken, verifyRefreshToken, generateAccessToken } from '../utils/jwt.js';
-import { COOKIE_ACCESS_NAME, COOKIE_REFRESH_NAME } from '../utils/cookies.js';
+import { COOKIE_ACCESS_NAME, COOKIE_REFRESH_NAME, setAccessTokenCookie } from '../utils/cookies.js';
 import { prisma } from '../config/prisma.js';
 import { hashToken } from '../utils/security.js';
 
@@ -63,14 +63,8 @@ export async function requireAuth(
             email: session.user.email,
           });
 
-          // Refresh the access cookie
-          res.cookie(COOKIE_ACCESS_NAME, newAccessToken, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'lax',
-            path: '/',
-            maxAge: 15 * 60 * 1000,
-          });
+          // Refresh the access cookie using centralized options
+          setAccessTokenCookie(res, newAccessToken);
 
           req.user = {
             id: session.user.id,
