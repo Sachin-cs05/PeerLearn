@@ -91,6 +91,13 @@ export async function handleDownloadFile(
       return;
     }
 
+    // If client requested presigned redirect and cloud storage is active, generate short-lived signed URL
+    if (req.query.redirect === 'true' && storageService.isCloudStorage()) {
+      const presignedUrl = await storageService.getDownloadUrl(resource.fileKey, 300);
+      res.redirect(presignedUrl);
+      return;
+    }
+
     const { stream, size } = await storageService.getFileStream(resource.fileKey);
 
     res.setHeader('Content-Type', resource.mimeType || 'application/octet-stream');

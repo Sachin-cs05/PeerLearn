@@ -73,6 +73,14 @@ const envSchema = z.object({
   TURN_USERNAME: z.string().optional(),
   TURN_CREDENTIAL: z.string().optional(),
 
+  // Cloud Storage Configuration (Cloudflare R2 - S3-compatible API)
+  STORAGE_PROVIDER: z.enum(['local', 'r2']).default('local'),
+  R2_ACCOUNT_ID: z.string().optional(),
+  R2_ACCESS_KEY_ID: z.string().optional(),
+  R2_SECRET_ACCESS_KEY: z.string().optional(),
+  R2_BUCKET_NAME: z.string().optional(),
+  R2_PUBLIC_URL: z.string().optional(),
+
 }).superRefine((data, ctx) => {
 
   // Production Secret Validation
@@ -113,6 +121,34 @@ const envSchema = z.object({
       message: 'SMTP_USER and SMTP_PASS are required when EMAIL_PROVIDER is smtp',
       path: ['SMTP_USER'],
     });
+  }
+
+  // Storage Provider & Cloudflare R2 Validation
+  if (data.NODE_ENV === 'production' && data.STORAGE_PROVIDER === 'local') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'STORAGE_PROVIDER cannot be "local" in production. Cloudflare R2 is required.',
+      path: ['STORAGE_PROVIDER'],
+    });
+  }
+
+  if (data.STORAGE_PROVIDER === 'r2') {
+    const r2Fields = [
+      { name: 'R2_ACCOUNT_ID', value: data.R2_ACCOUNT_ID },
+      { name: 'R2_ACCESS_KEY_ID', value: data.R2_ACCESS_KEY_ID },
+      { name: 'R2_SECRET_ACCESS_KEY', value: data.R2_SECRET_ACCESS_KEY },
+      { name: 'R2_BUCKET_NAME', value: data.R2_BUCKET_NAME },
+    ];
+
+    for (const { name, value } of r2Fields) {
+      if (!value || value.trim().length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `${name} is required when STORAGE_PROVIDER is r2`,
+          path: [name],
+        });
+      }
+    }
   }
 
 });
