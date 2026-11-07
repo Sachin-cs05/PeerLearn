@@ -738,7 +738,9 @@ describe('Phase 2.2: Comprehensive Secure File Upload & Download Lifecycle', () 
       // Verify the task status is locked by whichever worker won
       const current = storageReconciliation.getAllTasks().find((t) => t.id === task.id);
       expect(current?.status).toBe('PROCESSING');
-      expect(['worker-simultaneous-1', 'worker-simultaneous-2']).toContain(current?.lockedBy);
+      const winningWorker = current?.lockedBy?.split(':')[0];
+      expect(['worker-simultaneous-1', 'worker-simultaneous-2']).toContain(winningWorker);
+      expect(current?.leaseToken).toBeTruthy();
     });
 
     it('18g. EXPIRED LEASE RECOVERY: Atomically reclaims task if previous worker crashed and lease expired (> 5 minutes)', async () => {
@@ -747,7 +749,8 @@ describe('Phase 2.2: Comprehensive Secure File Upload & Download Lifecycle', () 
 
       // Simulate a crashed worker whose lock was acquired 6 minutes ago
       task.status = 'PROCESSING';
-      task.lockedBy = 'crashed-worker-dead';
+      task.lockedBy = 'crashed-worker-dead:legacy-token';
+      task.leaseToken = 'legacy-token';
       task.lockedAt = new Date(Date.now() - 6 * 60 * 1000); // 6 min ago (> 5 min lease)
       await storageReconciliation.persistTask(task);
 
@@ -756,7 +759,8 @@ describe('Phase 2.2: Comprehensive Secure File Upload & Download Lifecycle', () 
       expect(reclaimed).toBe(true);
 
       const current = storageReconciliation.getAllTasks().find((t) => t.id === task.id);
-      expect(current?.lockedBy).toBe('recovery-worker-alive');
+      expect(current?.lockedBy).toMatch(/^recovery-worker-alive:/);
+      expect(current?.leaseToken).toBeTruthy();
       expect(current?.status).toBe('PROCESSING');
     });
   });

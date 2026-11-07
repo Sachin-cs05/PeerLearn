@@ -1,17 +1,35 @@
 [
   {
-    "id": "dangling-7e8fceae-e301-48c5-a640-81d97073bdae",
+    "id": "orphan-e7b58630-c7fe-477d-99be-15d8af3b56b7",
+    "taskType": "ORPHAN_STORAGE_KEY",
+    "type": "ORPHAN_STORAGE_KEY",
+    "fileKey": "crashed-worker-key-9999.pdf",
+    "resourceId": null,
+    "status": "PROCESSING",
+    "retryCount": 1,
+    "maxRetries": 5,
+    "lastError": "CRASH_TEST: ",
+    "lockedAt": "2026-11-07T10:12:48.327Z",
+    "lockedBy": "recovery-worker-alive:6e077cf4-920a-4cee-a57e-c639de7fad9a",
+    "createdAt": "2026-11-07T10:12:48.325Z",
+    "updatedAt": "2026-11-07T10:12:48.327Z",
+    "persisted": true,
+    "storageTier": "ephemeral_fallback",
+    "leaseToken": "6e077cf4-920a-4cee-a57e-c639de7fad9a"
+  },
+  {
+    "id": "dangling-b9d6de21-fc2c-4e08-9619-2921e4094213",
     "taskType": "DANGLING_DB_RESOURCE",
     "type": "DANGLING_DB_RESOURCE",
-    "fileKey": "77777777-8888-9999-0000-111111111111.pdf",
-    "resourceId": "res-db-fail",
+    "fileKey": "11111111-2222-3333-4444-555555555555.pdf",
+    "resourceId": "res-db-fail-24",
     "status": "PENDING",
     "retryCount": 0,
     "maxRetries": 5,
-    "lastError": "DB_DELETE_FAILED: PrismaClientKnownRequestError: Connection lost",
+    "lastError": "DB_DELETE_FAILED: Database deadlock on delete",
     "lockedAt": null,
     "lockedBy": null,
-    "createdAt": "2026-11-07T08:31:33.984Z",
-    "updatedAt": "2026-11-07T08:31:33.984Z"
+    "createdAt": "2026-11-07T10:13:19.702Z",
+    "updatedAt": "2026-11-07T10:13:19.702Z"
   }
 ]

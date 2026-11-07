@@ -20,10 +20,16 @@ export interface ReconciliationTask {
   lastError?: string | null;
   lockedAt?: Date | null;
   lockedBy?: string | null;
+  leaseToken?: string | null;
   createdAt: Date;
   updatedAt: Date;
   persisted?: boolean;
   storageTier?: StoragePersistenceTier;
+}
+
+export interface ClaimTaskOptions {
+  force?: boolean;
+  leaseToken?: string;
 }
 
 export interface PersistTaskResult {
@@ -174,8 +180,13 @@ export class StorageReconciliationService {
       this.flushToDisk();
     }
 
+    // 1. Database-level persistence
+    const isIsolatedTestDb = Boolean(process.env.STORAGE_TEST_DATABASE_URL) || process.env.ISOLATED_TEST_DB === 'true';
+    const shouldWriteToDb = (prisma as any).storageReconciliation &&
+      (process.env.NODE_ENV !== 'test' || isIsolatedTestDb);
+
     try {
-      if ((prisma as any).storageReconciliation) {
+      if (shouldWriteToDb) {
         await (prisma as any).storageReconciliation.upsert({
           where: { id: task.id },
           create: {
@@ -264,7 +275,7 @@ export class StorageReconciliationService {
    */
   async recordOrphanStorageKey(
     fileKey: string,
-    reason: string,
+    reason: string = 'ORPHAN_KEY',
     details?: string
   ): Promise<ReconciliationTask> {
     const id = `orphan-${crypto.randomUUID()}`;
@@ -352,15 +363,28 @@ export class StorageReconciliationService {
   /**
    * Atomically claims a task for a worker.
    * Guarantees that concurrent workers cannot claim the same task.
-   * Expired leases (> 5 min) can be reclaimed. Active leases are strictly protected.
+   * Assigns a cryptographically secure unique UUID leaseToken to every claim for strict fencing.
+   * Expired leases (> lockLeaseMs) can be reclaimed. Active leases are strictly protected.
    */
-  async claimTask(taskId: string, workerId: string, options?: { force?: boolean }): Promise<boolean> {
+  async claimTask(taskId: string, workerId: string, options?: ClaimTaskOptions): Promise<boolean> {
     const now = Date.now();
     const leaseCutoff = new Date(now - this.lockLeaseMs);
     const cachedTask = this.inMemoryCache.get(taskId);
 
+    // 1. Enforce unique cryptographically secure UUID leaseToken for every claim
+    const leaseToken = options?.leaseToken || (workerId.includes(':') ? workerId.split(':')[1] : crypto.randomUUID());
+    if (options) {
+      options.leaseToken = leaseToken;
+    }
+    const pureWorkerId = workerId.includes(':') ? workerId.split(':')[0] : workerId;
+    const leaseIdentity = `${pureWorkerId}:${leaseToken}`;
+
+    const isIsolatedTestDb = Boolean(process.env.STORAGE_TEST_DATABASE_URL) || process.env.ISOLATED_TEST_DB === 'true';
+    const shouldAccessDb = (prisma as any).storageReconciliation &&
+      (process.env.NODE_ENV !== 'test' || isIsolatedTestDb);
+
     // 1. Try PostgreSQL atomic update if model is available and task was persisted in DB
-    if ((cachedTask?.storageTier === 'database' || !cachedTask) && (prisma as any).storageReconciliation) {
+    if ((cachedTask?.storageTier === 'database' || !cachedTask) && shouldAccessDb) {
       try {
         const result = await (prisma as any).storageReconciliation.updateMany({
           where: {
@@ -376,7 +400,7 @@ export class StorageReconciliationService {
           data: {
             status: 'PROCESSING',
             lockedAt: new Date(),
-            lockedBy: workerId,
+            lockedBy: leaseIdentity,
             retryCount: { increment: 1 },
             updatedAt: new Date(),
           },
@@ -387,7 +411,8 @@ export class StorageReconciliationService {
           if (cachedTask) {
             cachedTask.status = 'PROCESSING';
             cachedTask.lockedAt = new Date();
-            cachedTask.lockedBy = workerId;
+            cachedTask.lockedBy = leaseIdentity;
+            cachedTask.leaseToken = leaseToken;
             cachedTask.retryCount += 1;
             cachedTask.updatedAt = new Date();
           }
@@ -402,7 +427,7 @@ export class StorageReconciliationService {
         if (process.env.NODE_ENV === 'production' && !this.isPersistentDiskConfigured) {
           logger.error('[STORAGE_RECONCILIATION_CRITICAL] Atomic claim failed due to PostgreSQL unavailability in production', {
             taskId,
-            workerId,
+            workerId: pureWorkerId,
             error: this.sanitizeError(dbErr),
           });
           return false;
@@ -438,7 +463,8 @@ export class StorageReconciliationService {
     // Atomic claim within Node.js event turn
     task.status = 'PROCESSING';
     task.lockedAt = new Date();
-    task.lockedBy = workerId;
+    task.lockedBy = leaseIdentity;
+    task.leaseToken = leaseToken;
     task.retryCount += 1;
     task.updatedAt = new Date();
 
@@ -451,22 +477,53 @@ export class StorageReconciliationService {
 
   /**
    * Releases a claimed task after a failed attempt.
-   * Strictly enforces worker lease fencing: only the active lease owner can release.
+   * Strictly enforces worker lease fencing: validates lease identity so stale workers cannot overwrite newer locks.
+   * STRICT: Requires a valid, non-empty leaseToken matching the active claim.
    */
-  async releaseTask(taskId: string, workerId: string, error?: unknown): Promise<boolean> {
-    const sanitizedErr = this.sanitizeError(error);
+  async releaseTask(
+    taskId: string,
+    workerId: string,
+    leaseTokenOrError?: string | unknown,
+    errorOrLeaseToken?: unknown
+  ): Promise<boolean> {
+    let cleanToken: string | null = null;
+    let rawError: unknown = undefined;
+
+    if (typeof leaseTokenOrError === 'string' && leaseTokenOrError.trim()) {
+      cleanToken = leaseTokenOrError.trim();
+      rawError = errorOrLeaseToken;
+    } else if (typeof errorOrLeaseToken === 'string' && errorOrLeaseToken.trim()) {
+      cleanToken = errorOrLeaseToken.trim();
+      rawError = leaseTokenOrError;
+    }
+
+    if (!cleanToken) {
+      logger.warn('[STORAGE_RECONCILIATION_FENCED] Missing or empty leaseToken in releaseTask rejected', {
+        taskId,
+        workerId,
+      });
+      return false;
+    }
+
+    const sanitizedErr = this.sanitizeError(rawError);
     const task = this.inMemoryCache.get(taskId);
     const newStatus: ReconciliationStatus =
       task && task.retryCount >= task.maxRetries ? 'FAILED' : 'PENDING';
+    const pureWorkerId = workerId.includes(':') ? workerId.split(':')[0] : workerId;
+    const expectedIdentity = `${pureWorkerId}:${cleanToken}`;
+
+    const isIsolatedTestDb = Boolean(process.env.STORAGE_TEST_DATABASE_URL) || process.env.ISOLATED_TEST_DB === 'true';
+    const shouldAccessDb = (prisma as any).storageReconciliation &&
+      (process.env.NODE_ENV !== 'test' || isIsolatedTestDb);
 
     // 1. Database-level atomic fencing update
-    if ((task?.storageTier === 'database' || !task) && (prisma as any).storageReconciliation) {
+    if ((task?.storageTier === 'database' || !task) && shouldAccessDb) {
       try {
         const result = await (prisma as any).storageReconciliation.updateMany({
           where: {
             id: taskId,
-            lockedBy: workerId,
             status: 'PROCESSING',
+            lockedBy: expectedIdentity, // STRICT exact composite match only! NO startsWith!
           },
           data: {
             status: newStatus,
@@ -480,7 +537,8 @@ export class StorageReconciliationService {
         if (result.count === 0 && (task?.storageTier === 'database' || !task)) {
           logger.warn('[STORAGE_RECONCILIATION_FENCED] Stale worker attempt rejected in database releaseTask', {
             taskId,
-            staleWorker: workerId,
+            staleWorker: pureWorkerId,
+            leaseToken: cleanToken,
           });
           return false;
         }
@@ -494,12 +552,12 @@ export class StorageReconciliationService {
 
     // 2. In-memory / fallback store fencing update
     if (task) {
-      // Lease fencing check: worker must currently hold the lease
-      if (task.lockedBy && task.lockedBy !== workerId) {
+      // Strict lease fencing check: must match exact composite lease identity and leaseToken
+      if (task.lockedBy !== expectedIdentity || task.leaseToken !== cleanToken) {
         logger.warn('[STORAGE_RECONCILIATION_FENCED] In-memory stale worker lease rejected in releaseTask', {
           taskId,
           currentOwner: task.lockedBy,
-          staleWorker: workerId,
+          expectedOwner: expectedIdentity,
         });
         return false;
       }
@@ -507,7 +565,7 @@ export class StorageReconciliationService {
         logger.warn('[STORAGE_RECONCILIATION_FENCED] Stale worker attempt rejected: task not in PROCESSING', {
           taskId,
           status: task.status,
-          staleWorker: workerId,
+          staleWorker: pureWorkerId,
         });
         return false;
       }
@@ -515,6 +573,7 @@ export class StorageReconciliationService {
       task.status = newStatus;
       task.lockedAt = null;
       task.lockedBy = null;
+      task.leaseToken = null;
       task.lastError = sanitizedErr || null;
       task.updatedAt = new Date();
       if (this.allowDiskFallback) {
@@ -528,19 +587,35 @@ export class StorageReconciliationService {
 
   /**
    * Marks a task as RESOLVED after successful reconciliation.
-   * Strictly enforces worker lease fencing: only the active lease owner can resolve.
+   * Strictly enforces worker lease fencing: validates lease identity so stale workers cannot resolve or overwrite newer state.
+   * STRICT: Requires a valid, non-empty leaseToken matching the active claim.
    */
-  async resolveTask(taskId: string, workerId: string): Promise<boolean> {
+  async resolveTask(taskId: string, workerId: string, leaseToken: string): Promise<boolean> {
+    if (!leaseToken || typeof leaseToken !== 'string' || !leaseToken.trim()) {
+      logger.warn('[STORAGE_RECONCILIATION_FENCED] Missing or empty leaseToken in resolveTask rejected', {
+        taskId,
+        workerId,
+      });
+      return false;
+    }
+
+    const cleanToken = leaseToken.trim();
     const task = this.inMemoryCache.get(taskId);
+    const pureWorkerId = workerId.includes(':') ? workerId.split(':')[0] : workerId;
+    const expectedIdentity = `${pureWorkerId}:${cleanToken}`;
+
+    const isIsolatedTestDb = Boolean(process.env.STORAGE_TEST_DATABASE_URL) || process.env.ISOLATED_TEST_DB === 'true';
+    const shouldAccessDb = (prisma as any).storageReconciliation &&
+      (process.env.NODE_ENV !== 'test' || isIsolatedTestDb);
 
     // 1. Database-level atomic fencing update
-    if ((task?.storageTier === 'database' || !task) && (prisma as any).storageReconciliation) {
+    if ((task?.storageTier === 'database' || !task) && shouldAccessDb) {
       try {
         const result = await (prisma as any).storageReconciliation.updateMany({
           where: {
             id: taskId,
-            lockedBy: workerId,
             status: 'PROCESSING',
+            lockedBy: expectedIdentity, // STRICT exact composite match only! NO startsWith!
           },
           data: {
             status: 'RESOLVED',
@@ -554,7 +629,8 @@ export class StorageReconciliationService {
         if (result.count === 0 && (task?.storageTier === 'database' || !task)) {
           logger.warn('[STORAGE_RECONCILIATION_FENCED] Stale worker lease rejected in database resolveTask', {
             taskId,
-            staleWorker: workerId,
+            staleWorker: pureWorkerId,
+            leaseToken: cleanToken,
           });
           return false;
         }
@@ -568,12 +644,12 @@ export class StorageReconciliationService {
 
     // 2. In-memory / fallback store fencing update
     if (task) {
-      // Lease fencing check: worker must currently hold the lease
-      if (task.lockedBy && task.lockedBy !== workerId) {
+      // Strict lease fencing check: must match exact composite lease identity and leaseToken
+      if (task.lockedBy !== expectedIdentity || task.leaseToken !== cleanToken) {
         logger.warn('[STORAGE_RECONCILIATION_FENCED] In-memory stale worker lease rejected in resolveTask', {
           taskId,
           currentOwner: task.lockedBy,
-          staleWorker: workerId,
+          expectedOwner: expectedIdentity,
         });
         return false;
       }
@@ -581,7 +657,7 @@ export class StorageReconciliationService {
         logger.warn('[STORAGE_RECONCILIATION_FENCED] Stale worker attempt rejected: task not in PROCESSING', {
           taskId,
           status: task.status,
-          staleWorker: workerId,
+          staleWorker: pureWorkerId,
         });
         return false;
       }
@@ -589,6 +665,7 @@ export class StorageReconciliationService {
       task.status = 'RESOLVED';
       task.lockedAt = null;
       task.lockedBy = null;
+      task.leaseToken = null;
       task.lastError = null;
       task.updatedAt = new Date();
       if (this.allowDiskFallback) {
@@ -651,8 +728,9 @@ export class StorageReconciliationService {
         continue;
       }
 
-      // Attempt atomic lease claim
-      const claimed = await this.claimTask(taskId, workerId, { force: deps.force });
+      // Attempt atomic lease claim with unique fencing leaseToken
+      const leaseToken = crypto.randomUUID();
+      const claimed = await this.claimTask(taskId, workerId, { force: deps.force, leaseToken });
       if (!claimed) {
         skipped += 1;
         continue;
@@ -661,7 +739,7 @@ export class StorageReconciliationService {
       try {
         if (task.taskType === 'ORPHAN_STORAGE_KEY' && task.fileKey) {
           await deps.storageService.deleteFile(task.fileKey);
-          const resolved = await this.resolveTask(taskId, workerId);
+          const resolved = await this.resolveTask(taskId, workerId, leaseToken);
           if (resolved) {
             succeeded += 1;
             logger.info('[STORAGE_RECONCILIATION] Reconciled orphaned storage key', {
@@ -687,7 +765,7 @@ export class StorageReconciliationService {
             }
           }
 
-          const resolved = await this.resolveTask(taskId, workerId);
+          const resolved = await this.resolveTask(taskId, workerId, leaseToken);
           if (resolved) {
             succeeded += 1;
             logger.info('[STORAGE_RECONCILIATION] Reconciled dangling database record', {
@@ -704,7 +782,7 @@ export class StorageReconciliationService {
           }
         }
       } catch (err: any) {
-        const released = await this.releaseTask(taskId, workerId, err);
+        const released = await this.releaseTask(taskId, workerId, err, leaseToken);
         if (released) {
           failed += 1;
         } else {
@@ -727,7 +805,11 @@ export class StorageReconciliationService {
     if (this.allowDiskFallback) {
       this.flushToDisk();
     }
-    if ((prisma as any).storageReconciliation) {
+    const isIsolatedTestDb = Boolean(process.env.STORAGE_TEST_DATABASE_URL) || process.env.ISOLATED_TEST_DB === 'true';
+    const shouldAccessDb = (prisma as any).storageReconciliation &&
+      (process.env.NODE_ENV !== 'test' || isIsolatedTestDb);
+
+    if (shouldAccessDb) {
       try {
         const result = await (prisma as any).storageReconciliation.deleteMany({
           where: { id: { in: taskIds } },

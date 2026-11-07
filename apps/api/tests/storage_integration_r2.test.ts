@@ -18,11 +18,10 @@ describe('Phase 2.4 — Task 10: Live Cloudflare R2 Integration Tests (Gated)', 
   }
 
   if (!shouldRun) {
-    it('SKIPPED — REAL R2 CREDENTIALS NOT CONFIGURED (Gated by STORAGE_INTEGRATION_TESTS=true and STORAGE_TEST_BUCKET)', () => {
+    it.skip('SKIPPED — REAL R2 CREDENTIALS NOT CONFIGURED (Gated by STORAGE_INTEGRATION_TESTS=true and STORAGE_TEST_BUCKET)', () => {
       console.log(
-        '[STORAGE_INTEGRATION_TESTS] Skipped live R2 integration tests. Required environment variables (STORAGE_INTEGRATION_TESTS=true, STORAGE_TEST_BUCKET) not present.'
+        '[STORAGE_INTEGRATION_TESTS] Skipped live R2 integration tests. Required environment variables (STORAGE_INTEGRATION_TESTS=true, STORAGE_TEST_BUCKET) not present. Zero real R2 requests were issued.'
       );
-      expect(true).toBe(true);
     });
     return;
   }

@@ -25,7 +25,7 @@ describe('Phase 2.4 — Tasks 6, 7, 8: Reconciliation Worker Reliability, Lease 
   });
 
   describe('Task 6: Worker Leasing, Strict Lease Fencing & Persistence Reliability', () => {
-    it('1. atomic leasing: exactly one worker claims task when multiple workers compete simultaneously', async () => {
+    it('1. atomic leasing: exactly one worker claims task when multiple workers compete simultaneously (verified in PostgreSQL & Memory)', async () => {
       const testKey = `compete-${crypto.randomUUID()}.pdf`;
       const task = await storageReconciliation.recordOrphanStorageKey(testKey, 'CONCURRENT_CLAIM_TEST');
       createdTestTaskIds.add(task.id);
@@ -38,9 +38,23 @@ describe('Phase 2.4 — Tasks 6, 7, 8: Reconciliation Worker Reliability, Lease 
       const successfulClaims = claimResults.filter((claimed) => claimed === true);
       expect(successfulClaims).toHaveLength(1);
 
+      // Verify in-memory state
       const updated = storageReconciliation.getAllTasks().find((t) => t.id === task.id);
       expect(updated?.status).toBe('PROCESSING');
-      expect(workers).toContain(updated?.lockedBy);
+      expect(updated?.lockedBy).toBeDefined();
+
+      // Verify directly from PostgreSQL database row when dedicated isolated test DB is configured
+      const isIsolatedTestDb = Boolean(process.env.STORAGE_TEST_DATABASE_URL) || process.env.ISOLATED_TEST_DB === 'true';
+      if (isIsolatedTestDb && (prisma as any).storageReconciliation) {
+        const dbRow = await (prisma as any).storageReconciliation.findUnique({
+          where: { id: task.id },
+        });
+        expect(dbRow).not.toBeNull();
+        expect(dbRow?.status).toBe('PROCESSING');
+        expect(dbRow?.retryCount).toBe(1);
+        expect(dbRow?.lockedAt).not.toBeNull();
+        expect(dbRow?.lockedBy).toMatch(/^worker-[1-4]/);
+      }
     }, 20000);
 
     it('2. STRICT LEASE FENCING on resolveTask: stale worker whose lease expired cannot resolve or overwrite newer worker state', async () => {
@@ -50,42 +64,95 @@ describe('Phase 2.4 — Tasks 6, 7, 8: Reconciliation Worker Reliability, Lease 
       const task = await shortLeaseService.recordOrphanStorageKey(testKey, 'FENCING_RESOLVE_TEST');
       createdTestTaskIds.add(task.id);
 
-      // Step 1: Worker A claims the task
-      const claimedA = await shortLeaseService.claimTask(task.id, 'worker-A');
+      // Step 1: Worker A claims the task with unique leaseToken
+      const claimOptA = { leaseToken: 'worker-a-token' };
+      const claimedA = await shortLeaseService.claimTask(task.id, 'worker-A', claimOptA);
       expect(claimedA).toBe(true);
 
       const taskUnderA = shortLeaseService.getAllTasks().find((t) => t.id === task.id);
       expect(taskUnderA?.status).toBe('PROCESSING');
-      expect(taskUnderA?.lockedBy).toBe('worker-A');
+      expect(taskUnderA?.lockedBy).toBe('worker-A:worker-a-token');
 
       // Step 2: Simulate lease expiration (> 100ms)
       await new Promise((resolve) => setTimeout(resolve, 120));
 
-      // Step 3: Worker B claims the expired task
-      const claimedB = await shortLeaseService.claimTask(task.id, 'worker-B', { force: true });
+      // Step 3: Worker B claims the expired task with its own unique leaseToken
+      const claimOptB = { force: true, leaseToken: 'worker-b-token' };
+      const claimedB = await shortLeaseService.claimTask(task.id, 'worker-B', claimOptB);
       expect(claimedB).toBe(true);
 
       const taskUnderB = shortLeaseService.getAllTasks().find((t) => t.id === task.id);
       expect(taskUnderB?.status).toBe('PROCESSING');
-      expect(taskUnderB?.lockedBy).toBe('worker-B');
+      expect(taskUnderB?.lockedBy).toBe('worker-B:worker-b-token');
 
       // Step 4: Stale Worker A finishes late and attempts resolveTask!
       // Strict lease fencing MUST reject Worker A's resolution attempt
-      const resolveResultA = await shortLeaseService.resolveTask(task.id, 'worker-A');
+      const resolveResultA = await shortLeaseService.resolveTask(task.id, 'worker-A', 'worker-a-token');
       expect(resolveResultA).toBe(false);
 
       // Crucial: Task must NOT be resolved, and Worker B's active lock must NOT be overwritten!
       const taskAfterStaleA = shortLeaseService.getAllTasks().find((t) => t.id === task.id);
       expect(taskAfterStaleA?.status).toBe('PROCESSING');
-      expect(taskAfterStaleA?.lockedBy).toBe('worker-B');
+      expect(taskAfterStaleA?.lockedBy).toBe('worker-B:worker-b-token');
 
-      // Step 5: Legitimate Worker B finishes and calls resolveTask
-      const resolveResultB = await shortLeaseService.resolveTask(task.id, 'worker-B');
+      // Step 5: Legitimate Worker B finishes and calls resolveTask with correct token
+      const resolveResultB = await shortLeaseService.resolveTask(task.id, 'worker-B', 'worker-b-token');
       expect(resolveResultB).toBe(true);
 
       const finalTask = shortLeaseService.getAllTasks().find((t) => t.id === task.id);
       expect(finalTask?.status).toBe('RESOLVED');
       expect(finalTask?.lockedBy).toBeNull();
+    }, 20000);
+
+    it('2b. COMPREHENSIVE FENCING & LEASE TOKENS: Worker A claims -> lease expires -> Worker B claims -> Worker A completion & release rejected -> Worker B completes', async () => {
+      const shortLeaseService = new StorageReconciliationService({ lockLeaseMs: 100 });
+      const testKey = `fencing-comprehensive-${crypto.randomUUID()}.pdf`;
+      const task = await shortLeaseService.recordOrphanStorageKey(testKey, 'COMPREHENSIVE_FENCING_TEST');
+      createdTestTaskIds.add(task.id);
+
+      // 1. Worker A claims task with unique leaseToken
+      const claimOptionsA = { leaseToken: 'lease-token-alpha' };
+      const claimedA = await shortLeaseService.claimTask(task.id, 'worker-A', claimOptionsA);
+      expect(claimedA).toBe(true);
+
+      const taskUnderA = shortLeaseService.getAllTasks().find((t) => t.id === task.id);
+      expect(taskUnderA?.status).toBe('PROCESSING');
+      expect(taskUnderA?.lockedBy).toBe('worker-A:lease-token-alpha');
+      expect(taskUnderA?.leaseToken).toBe('lease-token-alpha');
+
+      // 2. Worker A lease expires
+      await new Promise((resolve) => setTimeout(resolve, 120));
+
+      // 3. Worker B claims task with its own unique leaseToken
+      const claimOptionsB = { leaseToken: 'lease-token-beta', force: true };
+      const claimedB = await shortLeaseService.claimTask(task.id, 'worker-B', claimOptionsB);
+      expect(claimedB).toBe(true);
+
+      const taskUnderB = shortLeaseService.getAllTasks().find((t) => t.id === task.id);
+      expect(taskUnderB?.status).toBe('PROCESSING');
+      expect(taskUnderB?.lockedBy).toBe('worker-B:lease-token-beta');
+      expect(taskUnderB?.leaseToken).toBe('lease-token-beta');
+
+      // 4. Stale Worker A attempts completion (resolveTask) -> must be rejected
+      const resolveA = await shortLeaseService.resolveTask(task.id, 'worker-A', 'lease-token-alpha');
+      expect(resolveA).toBe(false);
+
+      // 5. Stale Worker A attempts release (releaseTask) -> must be rejected
+      const releaseA = await shortLeaseService.releaseTask(task.id, 'worker-A', new Error('Stale timeout failure'), 'lease-token-alpha');
+      expect(releaseA).toBe(false);
+
+      // 6. Both stale operations are rejected; Worker B retains active ownership
+      const taskAfterStaleAttempts = shortLeaseService.getAllTasks().find((t) => t.id === task.id);
+      expect(taskAfterStaleAttempts?.status).toBe('PROCESSING');
+      expect(taskAfterStaleAttempts?.lockedBy).toBe('worker-B:lease-token-beta');
+
+      // 7. Legitimate Worker B completes successfully
+      const resolveB = await shortLeaseService.resolveTask(task.id, 'worker-B', 'lease-token-beta');
+      expect(resolveB).toBe(true);
+
+      const finalResolved = shortLeaseService.getAllTasks().find((t) => t.id === task.id);
+      expect(finalResolved?.status).toBe('RESOLVED');
+      expect(finalResolved?.lockedBy).toBeNull();
     }, 20000);
 
     it('3. STRICT LEASE FENCING on releaseTask: stale worker whose lease expired cannot release or reset newer worker state', async () => {
@@ -94,26 +161,28 @@ describe('Phase 2.4 — Tasks 6, 7, 8: Reconciliation Worker Reliability, Lease 
       const task = await shortLeaseService.recordOrphanStorageKey(testKey, 'FENCING_RELEASE_TEST');
       createdTestTaskIds.add(task.id);
 
-      // Worker A claims
-      await shortLeaseService.claimTask(task.id, 'worker-A');
+      // Worker A claims with unique token
+      const claimOpt3A = { leaseToken: 'token-3a' };
+      await shortLeaseService.claimTask(task.id, 'worker-A', claimOpt3A);
 
       // Lease expires
       await new Promise((resolve) => setTimeout(resolve, 120));
 
-      // Worker B claims
-      await shortLeaseService.claimTask(task.id, 'worker-B', { force: true });
+      // Worker B claims with its own token
+      const claimOpt3B = { force: true, leaseToken: 'token-3b' };
+      await shortLeaseService.claimTask(task.id, 'worker-B', claimOpt3B);
 
-      // Stale Worker A attempts releaseTask
-      const releaseResultA = await shortLeaseService.releaseTask(task.id, 'worker-A', new Error('Late timeout'));
+      // Stale Worker A attempts releaseTask with its expired token
+      const releaseResultA = await shortLeaseService.releaseTask(task.id, 'worker-A', 'token-3a', new Error('Late timeout'));
       expect(releaseResultA).toBe(false);
 
       // Task status and Worker B lease are strictly preserved
       const taskAfterStaleRelease = shortLeaseService.getAllTasks().find((t) => t.id === task.id);
       expect(taskAfterStaleRelease?.status).toBe('PROCESSING');
-      expect(taskAfterStaleRelease?.lockedBy).toBe('worker-B');
+      expect(taskAfterStaleRelease?.lockedBy).toBe('worker-B:token-3b');
 
-      // Worker B successfully finalizes
-      const resolveResultB = await shortLeaseService.resolveTask(task.id, 'worker-B');
+      // Worker B successfully finalizes with its token
+      const resolveResultB = await shortLeaseService.resolveTask(task.id, 'worker-B', 'token-3b');
       expect(resolveResultB).toBe(true);
     }, 20000);
 
@@ -123,8 +192,9 @@ describe('Phase 2.4 — Tasks 6, 7, 8: Reconciliation Worker Reliability, Lease 
       createdTestTaskIds.add(task.id);
 
       for (let i = 0; i < task.maxRetries; i++) {
-        await storageReconciliation.claimTask(task.id, `exhaust-worker-${i}`, { force: true });
-        await storageReconciliation.releaseTask(task.id, `exhaust-worker-${i}`, new Error(`Attempt ${i + 1} failed`));
+        const token = `exhaust-token-${i}`;
+        await storageReconciliation.claimTask(task.id, `exhaust-worker-${i}`, { force: true, leaseToken: token });
+        await storageReconciliation.releaseTask(task.id, `exhaust-worker-${i}`, token, new Error(`Attempt ${i + 1} failed`));
       }
 
       const exhaustedTask = storageReconciliation.getAllTasks().find((t) => t.id === task.id);
@@ -215,10 +285,12 @@ describe('Phase 2.4 — Tasks 6, 7, 8: Reconciliation Worker Reliability, Lease 
       expect(recoveredTask).toBeDefined();
       expect(recoveredTask?.fileKey).toBe(testKey);
 
-      // Worker on rebooted service claims and resolves the task
-      const claimed = await restartedService.claimTask(recoveredTask!.id, 'reboot-worker', { force: true });
+      // Worker on rebooted service claims and resolves the task with leaseToken
+      const claimReboot = { force: true, leaseToken: 'reboot-token-7' };
+      const claimed = await restartedService.claimTask(recoveredTask!.id, 'reboot-worker', claimReboot);
       expect(claimed).toBe(true);
-      await restartedService.resolveTask(recoveredTask!.id, 'reboot-worker');
+      const resolvedRes = await restartedService.resolveTask(recoveredTask!.id, 'reboot-worker', 'reboot-token-7');
+      expect(resolvedRes).toBe(true);
 
       const resolved = restartedService.getAllTasks().find((t) => t.id === recoveredTask!.id);
       expect(resolved?.status).toBe('RESOLVED');

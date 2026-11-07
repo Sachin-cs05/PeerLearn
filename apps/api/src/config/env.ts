@@ -81,6 +81,23 @@ const envSchema = z.object({
   R2_BUCKET_NAME: z.string().optional(),
   R2_PUBLIC_URL: z.string().optional(),
 
+  // Storage Background Reconciliation Worker
+  STORAGE_RECONCILIATION_ENABLED: z
+    .string()
+    .default('true')
+    .transform((val) => val === 'true' || val === '1'),
+
+  STORAGE_RECONCILIATION_INTERVAL_MS: z
+    .string()
+    .default('60000')
+    .transform((val) => {
+      const parsed = Number.parseInt(val, 10);
+      if (Number.isNaN(parsed) || parsed < 1000) {
+        throw new Error('STORAGE_RECONCILIATION_INTERVAL_MS must be at least 1000ms');
+      }
+      return parsed;
+    }),
+
 }).superRefine((data, ctx) => {
 
   // Production Secret Validation

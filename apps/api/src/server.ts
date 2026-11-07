@@ -6,6 +6,7 @@ import { logger } from './utils/logger.js';
 import { APP_NAME, APP_TAGLINE } from '@peerlume/shared';
 import { initSocketIO } from './socket/index.js';
 import { startReminderScheduler, stopReminderScheduler } from './services/reminder.service.js';
+import { startReconciliationScheduler, stopReconciliationScheduler } from './services/storage/reconciliationScheduler.service.js';
 
 let server: Server;
 
@@ -17,6 +18,9 @@ async function startServer(): Promise<void> {
 
   // Initialize background session reminder scheduler
   startReminderScheduler();
+
+  // Initialize storage reconciliation background worker scheduler
+  startReconciliationScheduler();
 
   server.listen(env.PORT,'0.0.0.0', async () => {
     logger.info(`✨ ${APP_NAME} API Server started successfully!`);
@@ -44,6 +48,11 @@ async function startServer(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.info(`Received ${signal}. Gracefully shutting down ${APP_NAME} API server...`);
     stopReminderScheduler();
+    try {
+      await stopReconciliationScheduler();
+    } catch (schedErr) {
+      logger.error('Error stopping reconciliation scheduler on shutdown:', schedErr);
+    }
     try {
       const { codeSyncService } = await import('./services/codeSync.service.js');
       await codeSyncService.flushAll();
