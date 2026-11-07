@@ -8,7 +8,8 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "storage:migrate:dry-run": "tsx src/scripts/migrateStorage.ts --dry-run --report"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1163.0",

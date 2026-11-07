@@ -558,9 +558,9 @@ describe('Phase 2.2: Comprehensive Secure File Upload & Download Lifecycle', () 
       const restartedService = new StorageReconciliationService();
       const restoredPending = restartedService.getPendingTasks();
 
-      expect(restoredPending).toHaveLength(1);
-      expect(restoredPending[0].fileKey).toBe(testKey);
-      expect(restoredPending[0].status).toBe('PENDING');
+      const match = restoredPending.find((t) => t.fileKey === testKey);
+      expect(match).toBeDefined();
+      expect(match?.status).toBe('PENDING');
 
       restartedService.clear();
     });

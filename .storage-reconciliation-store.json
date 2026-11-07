@@ -1,6 +1,6 @@
 [
   {
-    "id": "orphan-fe7f8d94-1a54-4f41-99d9-44d4c3459b0c",
+    "id": "orphan-f4ca291b-48af-4f4a-a846-3ad892a2fa51",
     "taskType": "ORPHAN_STORAGE_KEY",
     "type": "ORPHAN_STORAGE_KEY",
     "fileKey": "crashed-worker-key-9999.pdf",
@@ -9,11 +9,26 @@
     "retryCount": 1,
     "maxRetries": 5,
     "lastError": "CRASH_TEST: ",
-    "lockedAt": "2026-11-06T17:51:08.318Z",
+    "lockedAt": "2026-11-07T08:34:06.159Z",
     "lockedBy": "recovery-worker-alive",
-    "createdAt": "2026-11-06T17:51:07.167Z",
-    "updatedAt": "2026-11-06T17:51:08.318Z",
+    "createdAt": "2026-11-07T08:34:06.153Z",
+    "updatedAt": "2026-11-07T08:34:06.159Z",
     "persisted": true,
     "storageTier": "ephemeral_fallback"
+  },
+  {
+    "id": "dangling-18419be7-af5a-4305-82de-3e6e8160ed13",
+    "taskType": "DANGLING_DB_RESOURCE",
+    "type": "DANGLING_DB_RESOURCE",
+    "fileKey": "11111111-2222-3333-4444-555555555555.pdf",
+    "resourceId": "res-db-fail-24",
+    "status": "PENDING",
+    "retryCount": 0,
+    "maxRetries": 5,
+    "lastError": "DB_DELETE_FAILED: Database deadlock on delete",
+    "lockedAt": null,
+    "lockedBy": null,
+    "createdAt": "2026-11-07T08:35:35.588Z",
+    "updatedAt": "2026-11-07T08:35:35.588Z"
   }
 ]

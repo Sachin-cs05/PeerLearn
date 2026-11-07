@@ -27,12 +27,21 @@ export function errorHandler(
   next: NextFunction
 ): void {
   const isAppError = err instanceof AppError;
-  const statusCode = isAppError ? err.statusCode : HTTP_STATUS.INTERNAL_SERVER_ERROR;
-  const code = isAppError ? err.code : 'INTERNAL_SERVER_ERROR';
+  const isMulterError = err.name === 'MulterError';
+  const statusCode = isAppError
+    ? err.statusCode
+    : isMulterError
+      ? HTTP_STATUS.BAD_REQUEST
+      : HTTP_STATUS.INTERNAL_SERVER_ERROR;
+  const code = isAppError
+    ? err.code
+    : isMulterError
+      ? 'FILE_UPLOAD_ERROR'
+      : 'INTERNAL_SERVER_ERROR';
 
   // Sanitize message in production to prevent leaking sensitive internals
   const isProduction = env.NODE_ENV === 'production';
-  const message = isAppError
+  const message = isAppError || isMulterError
     ? err.message
     : isProduction
       ? 'An unexpected internal server error occurred'
