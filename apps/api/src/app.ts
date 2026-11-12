@@ -54,6 +54,16 @@ export function createApp(): Express {
   // Cross-Site Request Forgery Protection for cookie-authenticated mutating requests
   app.use('/api', csrfProtection);
 
+  // Root welcome & status endpoint
+  app.get('/', (_req, res) => {
+    res.json({
+      success: true,
+      name: 'PeerLearn API',
+      status: 'online',
+      health: '/api/health',
+    });
+  });
+
   // Base API routes
   app.use('/api', apiRoutes);
 
