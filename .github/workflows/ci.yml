@@ -53,6 +53,12 @@ jobs:
           npm run prisma:validate
           npm run prisma:generate
 
+      - name: Build Shared Package
+        run: npm run build:shared
+
+      - name: Apply Database Migrations
+        run: npx prisma migrate deploy
+
       - name: Run Typecheck across monorepo
         run: npm run typecheck
 

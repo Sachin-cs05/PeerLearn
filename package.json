@@ -19,7 +19,7 @@
     "build:shared": "npm run build --workspace=@peerlume/shared",
     "build:api": "npm run build --workspace=@peerlume/api",
     "build:web": "npm run build --workspace=@peerlume/web",
-    "typecheck": "npm run typecheck --workspace=@peerlume/shared && npm run typecheck --workspace=@peerlume/api && npm run typecheck --workspace=@peerlume/web",
+    "typecheck": "npm run build:shared && npm run typecheck --workspace=@peerlume/shared && npm run typecheck --workspace=@peerlume/api && npm run typecheck --workspace=@peerlume/web",
     "lint": "eslint .",
     "test": "npm run test --workspace=@peerlume/api",
     "prisma:generate": "prisma generate",
