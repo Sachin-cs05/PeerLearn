@@ -141,6 +141,7 @@ const envSchema = z.object({
   }
 
   // Storage Provider & Cloudflare R2 Validation
+  // Local storage is explicitly allowed in production for ephemeral platforms (e.g., Render)
   if (data.STORAGE_PROVIDER === 'r2') {
     const r2Fields = [
       { name: 'R2_ACCOUNT_ID', value: data.R2_ACCOUNT_ID },
