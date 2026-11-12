@@ -64,15 +64,15 @@ function createDefaultProvider(): StorageProvider {
     });
   }
 
-  // Enforce no silent fallback to ephemeral storage in production
+  // Allow local storage in production with a warning (ephemeral files on container restarts)
   if (env.NODE_ENV === 'production') {
-    const errorMsg =
-      'CRITICAL: Local ephemeral filesystem storage is prohibited in production. Cloudflare R2 must be configured.';
-    logger.error('[STORAGE] ' + errorMsg);
-    throw new AppError(errorMsg, HTTP_STATUS.INTERNAL_SERVER_ERROR);
+    logger.warn(
+      '[STORAGE] Warning: Running with local filesystem storage in production. Uploaded files will be ephemeral across restarts unless persistent disk or Cloudflare R2 is configured.'
+    );
+  } else {
+    logger.info('[STORAGE] Initialized local filesystem storage provider (dev/test only)');
   }
 
-  logger.info('[STORAGE] Initialized local filesystem storage provider (dev/test only)');
   return new LocalStorageProvider();
 }
 

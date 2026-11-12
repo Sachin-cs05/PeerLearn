@@ -131,16 +131,15 @@ describe('Phase 2.1: Cloudflare R2 Storage Integration & Provider Abstraction', 
       }
     });
 
-    it('prohibits local ephemeral filesystem storage in production environment', () => {
+    it('allows local filesystem storage in production environment with warning', () => {
       const origEnv = env.NODE_ENV;
       const origProvider = env.STORAGE_PROVIDER;
       try {
         (env as any).NODE_ENV = 'production';
         (env as any).STORAGE_PROVIDER = 'local';
 
-        expect(() => storageService.resetProvider()).toThrow(
-          'CRITICAL: Local ephemeral filesystem storage is prohibited in production'
-        );
+        expect(() => storageService.resetProvider()).not.toThrow();
+        expect(storageService.getProvider().name).toBe('local');
       } finally {
         (env as any).NODE_ENV = origEnv;
         (env as any).STORAGE_PROVIDER = origProvider;

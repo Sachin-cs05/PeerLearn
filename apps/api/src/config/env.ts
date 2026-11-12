@@ -141,14 +141,6 @@ const envSchema = z.object({
   }
 
   // Storage Provider & Cloudflare R2 Validation
-  if (data.NODE_ENV === 'production' && data.STORAGE_PROVIDER === 'local') {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'STORAGE_PROVIDER cannot be "local" in production. Cloudflare R2 is required.',
-      path: ['STORAGE_PROVIDER'],
-    });
-  }
-
   if (data.STORAGE_PROVIDER === 'r2') {
     const r2Fields = [
       { name: 'R2_ACCOUNT_ID', value: data.R2_ACCOUNT_ID },
