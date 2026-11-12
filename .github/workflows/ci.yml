@@ -56,8 +56,8 @@ jobs:
       - name: Build Shared Package
         run: npm run build:shared
 
-      - name: Apply Database Migrations
-        run: npx prisma migrate deploy
+      - name: Apply Database Schema
+        run: npx prisma db push --skip-generate
 
       - name: Run Typecheck across monorepo
         run: npm run typecheck
